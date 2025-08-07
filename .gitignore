@@ -30,7 +30,6 @@ env.bak/
 venv.bak/
 
 # Data files
-data/
 dataset/
 datasets/
 *.csv
