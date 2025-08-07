@@ -15,7 +15,7 @@ class TetrisAI:
         self.thinking_time = 0
         
 
-        self.mode = random.choice([1, 1, 2, 3])
+        self.mode = random.choice([1, 1,1, 2, 3])
         if self.mode == 1:
             self.mode_duration = 300
             print("AI Mode switched to: SMART")
@@ -28,7 +28,7 @@ class TetrisAI:
         self.mode_frame_counter = 0
 
     def switch_mode(self):
-        self.mode = random.choice([1, 2, 3])
+        self.mode = random.choice([1, 1,1, 2, 3])
         if self.mode == 1:
             self.mode_duration = 300
             print("AI Mode switched to: SMART")
