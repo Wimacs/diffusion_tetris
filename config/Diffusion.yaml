@@ -1,0 +1,35 @@
+training:
+  epochs: 30
+  batch_size: 4
+  num_workers: 2
+  save_every_epoch: 1
+
+generation:
+  image_size: 64
+  input_channels: 3
+  output_channels: 3
+  context_length: 4
+  actions_count: 5
+
+edm:
+  p_mean: -1.2
+  p_std: 1.2
+  sigma_data: 0.5
+  sigma_min: 0.002
+  sigma_max: 80
+  rho: 7
+  unet:
+    __type__: models.gen.blocks.UNetConfig
+    steps: [2, 2, 2, 2]
+    channels: [64, 64, 64, 64]
+    cond_channels: 256
+    attn_step_indexes: [false, false, false, false]
+
+ddpm:
+  T: 1000
+  unet:
+    __type__: models.gen.blocks.UNetConfig
+    steps: [2, 2, 2, 2]
+    channels: [64, 64, 64, 64]
+    cond_channels: 256
+    attn_step_indexes: [false, false, false, false]
