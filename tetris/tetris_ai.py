@@ -13,7 +13,86 @@ class TetrisAI:
         self.move_sequence = []
         self.is_thinking = False
         self.thinking_time = 0
+        
 
+        self.mode = random.choice([1, 1, 2, 3])
+        if self.mode == 1:
+            self.mode_duration = 300
+            print("AI Mode switched to: SMART")
+        elif self.mode == 2:
+            self.mode_duration = 150
+            print("AI Mode switched to: PASSIVE")
+        elif self.mode == 3:
+            self.mode_duration = 150
+            print("AI Mode switched to: FOOL")
+        self.mode_frame_counter = 0
+
+    def switch_mode(self):
+        self.mode = random.choice([1, 2, 3])
+        if self.mode == 1:
+            self.mode_duration = 300
+            print("AI Mode switched to: SMART")
+        elif self.mode == 2:
+            self.mode_duration = 150
+            print("AI Mode switched to: PASSIVE")
+        elif self.mode == 3:
+            self.mode_duration = 150
+            print("AI Mode switched to: FOOL")
+        
+        # 重置状态
+        self.mode_frame_counter = 0
+        self.move_sequence = []
+        self.is_thinking = False
+
+    def update(self, dt):
+        self.mode_frame_counter += 1
+        if self.mode_frame_counter >= self.mode_duration:
+            self.switch_mode()
+
+        if self.mode == 1:
+            return self.update_smart(dt)
+        elif self.mode == 2:
+            return self.update_passive()
+        elif self.mode == 3:
+            return self.update_fool()
+        return 0
+
+    def update_smart(self, dt):
+        if self.is_thinking:
+            self.thinking_time -= dt
+            if self.thinking_time <= 0:
+                self.is_thinking = False
+                best_move = self.find_best_move()
+                self.get_move_sequence(best_move)
+            return 0  # 思考中，无操作
+
+        action_code = 0
+        if self.move_sequence:
+            move = self.move_sequence.pop(0)
+            if move == 'pause': action_code = 0
+            elif move == 'left':
+                self.game.move_piece(-1); action_code = 3
+            elif move == 'right':
+                self.game.move_piece(1); action_code = 4
+            elif move == 'rotate':
+                self.game.rotate_piece(); action_code = 1
+            elif move == 'drop':
+                self.game.drop_piece(); action_code = 2
+        return action_code
+
+    def update_passive(self):
+        return 0
+    
+    def update_fool(self):
+        action = random.choice([0, 1, 2, 3, 4]) # 0-无, 1-上, 2-下, 3-左, 4-右
+        if action == 1: self.game.rotate_piece()
+        elif action == 2:
+            if self.game.valid_move(self.game.current_piece, 0, 1):
+                self.game.current_piece.y += 1
+        elif action == 3: self.game.move_piece(-1)
+        elif action == 4: self.game.move_piece(1)
+        return action
+    
     def evaluate_grid(self, grid):
         heights = [0] * GRID_WIDTH
         for x in range(GRID_WIDTH):
@@ -121,44 +200,15 @@ class TetrisAI:
         self.move_sequence = sequence
 
     def start_thinking(self):
-        self.move_sequence = []
-        self.is_thinking = True
-        self.thinking_time = random.randint(100, 400)
-
-    def update(self, dt):
-        if self.is_thinking:
-            self.thinking_time -= dt
-            if self.thinking_time <= 0:
-                self.is_thinking = False
-                best_move = self.find_best_move()
-                self.get_move_sequence(best_move)
-            return 0 
-
-        action_code = 0
-        if self.move_sequence:
-            move = self.move_sequence.pop(0)
-            
-            if move == 'pause':
-                action_code = 0 
-
-            elif move == 'left':
-                self.game.move_piece(-1)
-                action_code = 3
-            elif move == 'right':
-                self.game.move_piece(1)
-                action_code = 4
-            elif move == 'rotate':
-                self.game.rotate_piece()
-                action_code = 1
-            elif move == 'drop':
-                self.game.drop_piece()
-                action_code = 2 
-        return action_code
+        if self.mode == 1:
+            self.move_sequence = []
+            self.is_thinking = True
+            self.thinking_time = random.randint(100, 400)
 
 def main():
     pygame.init()
     screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-    pygame.display.set_caption("俄罗斯方块 AI")
+    pygame.display.set_caption("Tetris AI")
     clock = pygame.time.Clock()
     
     DATA_DIR = "data"
@@ -170,6 +220,7 @@ def main():
         pass
     
     frame_number = 0
+    font = pygame.font.Font(None, 18) 
 
     game = Tetris()
     ai = TetrisAI(game)
@@ -227,8 +278,14 @@ def main():
             last_piece = None
         
         game.draw(screen)
+
+        #mode_str = {1: "SMART", 2: "PASSIVE", 3: "FOOL"}.get(ai.mode, "UNKNOWN")
+        #if not auto_mode: mode_str = "MANUAL"
+        #mode_text = font.render(mode_str, True, (255, 255, 255))
+        #screen.blit(mode_text, (SCREEN_WIDTH - 55, 5))
         
-        image_path = os.path.join(DATA_DIR, f"{frame_number}.bmp")
+
+        image_path = os.path.join(DATA_DIR, f"{frame_number}.png")
         pygame.image.save(screen, image_path)
 
         with open(action_file_path, "a") as f:
