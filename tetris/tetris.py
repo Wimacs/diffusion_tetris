@@ -143,10 +143,9 @@ class Tetris:
         self.current_piece = self.new_piece()
         self.next_piece = self.new_piece()
         self.score = 0
-        self.level = 1
         self.lines_cleared = 0
         self.fall_time = 0
-        self.fall_speed = 500
+        self.fall_speed = 200
         
     def new_piece(self):
         return Piece(GRID_WIDTH // 2 - 2, 0)
@@ -188,24 +187,20 @@ class Tetris:
         
         lines_cleared = len(lines_to_clear)
         self.lines_cleared += lines_cleared
-        self.score += lines_cleared * 100 * self.level
-        self.level = self.lines_cleared // 10 + 1
-        self.fall_speed = max(50, 500 - (self.level - 1) * 50)
+        self.score += lines_cleared * 100
+        self.fall_speed = max(50, 500)
     
     def game_over(self):
         return not self.valid_move(self.current_piece, 0, 0)
     
     def update(self, dt):
-        self.fall_time += dt
-        if self.fall_time >= self.fall_speed:
-            if self.valid_move(self.current_piece, 0, 1):
-                self.current_piece.y += 1
-            else:
-                self.place_piece(self.current_piece)
-                self.clear_lines()
-                self.current_piece = self.next_piece
-                self.next_piece = self.new_piece()
-            self.fall_time = 0
+        if self.valid_move(self.current_piece, 0, 1):
+            self.current_piece.y += 1
+        else:
+            self.place_piece(self.current_piece)
+            self.clear_lines()
+            self.current_piece = self.next_piece
+            self.next_piece = self.new_piece()
     
     def move_piece(self, dx):
         if self.valid_move(self.current_piece, dx, 0):
@@ -274,7 +269,6 @@ class Tetris:
                             current_x += 1
                     current_y += 1
         
-        # 网格线已移除以获得更清爽的视觉效果
 
 def main():
     screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
@@ -285,7 +279,7 @@ def main():
     
     running = True
     while running:
-        dt = clock.tick(60)
+        dt = clock.tick(10)  # 设置为10FPS，每帧下落一次
         
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -296,7 +290,8 @@ def main():
                 elif event.key == pygame.K_RIGHT:
                     game.move_piece(1)
                 elif event.key == pygame.K_DOWN:
-                    game.drop_piece()
+                    if game.valid_move(game.current_piece,0 ,1):
+                        game.current_piece.y += 1;
                 elif event.key == pygame.K_UP:
                     game.rotate_piece()
                 elif event.key == pygame.K_SPACE:
@@ -307,7 +302,6 @@ def main():
         if not game.game_over():
             game.update(dt)
         else:
-            # 游戏结束后自动重新开始
             game.reset_game()
         
         game.draw(screen)
