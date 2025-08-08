@@ -23,7 +23,7 @@ edm:
     steps: [2, 2, 2, 2]
     channels: [64, 64, 64, 64]
     cond_channels: 256
-    attn_step_indexes: [false, false, false, false]
+    attn_step_indexes: [false, false, true, true]
 
 ddpm:
   T: 1000
@@ -32,4 +32,4 @@ ddpm:
     steps: [2, 2, 2, 2]
     channels: [64, 64, 64, 64]
     cond_channels: 256
-    attn_step_indexes: [false, false, false, false]
+    attn_step_indexes: [false, false, true, true]
