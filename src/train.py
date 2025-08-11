@@ -8,6 +8,10 @@ import pickle
 import torch
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data import random_split
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except Exception:
+    SummaryWriter = None
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 import numpy as np
@@ -92,6 +96,7 @@ def _generate_and_save_sample_imgs(
 @click.option('--gen-val-images', help='Generate validating images', is_flag=True, required=False, default=False)
 
 @click.option('--last-checkpoint', help='Path of checkpoint to resume the training', type=str, required=False)
+@click.option('--logdir', help='TensorBoard log directory', type=str, required=False)
 def main(**kwargs):
     options = EasyDict(kwargs)
     with open(options.config, 'r') as f:
@@ -191,6 +196,7 @@ def main(**kwargs):
         _generate_and_save_sample_imgs(model, dataset, epoch, device, generation_config.context_length)
 
     print(f"Start training {options.model_type}")
+    writer = SummaryWriter(log_dir=options.logdir) if (options.get('logdir') and SummaryWriter is not None) else None
     train_loop(
         model=model,
         device=device,
@@ -199,8 +205,11 @@ def main(**kwargs):
         val_dataloader=val_dataloader,
         output_path_prefix=options.output_prefix,
         existing_model_path=options["last_checkpoint"],
-        gen_imgs=gen_val_images if options.gen_val_images else None
+        gen_imgs=gen_val_images if options.gen_val_images else None,
+        writer=writer
     )
+    if writer is not None:
+        writer.close()
 
 if __name__ == "__main__":
     main()
