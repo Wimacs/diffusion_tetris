@@ -350,7 +350,7 @@ class UNet(nn.Module):
             nn.SiLU(inplace=True),
             nn.Conv2d(in_channels=channels[0], out_channels=out_channels, kernel_size=3, stride=1, padding=1)
         )
-
+        
         # Build encoder/decoder stacks in clipboard style
         self._num_down = len(channels) - 1
         d_blocks: List[ResBlocks] = []
@@ -405,6 +405,12 @@ class UNet(nn.Module):
         return cond
 
     def forward(self, x: torch.Tensor, t: torch.Tensor, prev_actions: torch.Tensor):
+        # Sanitize action indices for embedding
+        if prev_actions.dtype != torch.long:
+            prev_actions = prev_actions.to(torch.long)
+        num_actions = self.actions_embedding[0].num_embeddings
+        prev_actions = prev_actions.clamp(min=0, max=num_actions - 1)
+
         # Build condition vector
         cond = self._build_condition(t, prev_actions)
 
@@ -440,7 +446,7 @@ class UNet(nn.Module):
         # Project to output channels
         x = self.output_proj(x)
         return x
-
+    
 if __name__ == "__main__":
     DownBlock(4).forward(torch.rand(4,4,64,64)).size(-1) == 32
     DownBlock(4).forward(torch.rand(4,4,32,32)).size(-1) == 16

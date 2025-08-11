@@ -7,6 +7,8 @@ import numpy as np
 import torch.nn.functional as F
 
 from .blocks import BaseDiffusionModel, UNetConfig
+from .denoiser_utils import compute_conditioners, apply_noise, wrap_model_output
+from .sampler_utils import build_sigmas, karras_step
 
 @dataclass
 class EDMConfig:
@@ -14,9 +16,17 @@ class EDMConfig:
     p_mean: float
     p_std: float
     sigma_data: float
+    # Karras schedule and sampler settings
     sigma_min: float = 0.002
     sigma_max: float = 80
     rho: float = 7
+    s_churn: float = 0
+    s_tmin: float = 0
+    s_tmax: float = float('inf')
+    s_noise: float = 1
+    order: int = 1
+    sigma_offset_noise: float = 0.0
+    quantize_output: bool = True
 
 # Took parts of the code from the official implementation of the paper:
 # https://github.com/NVlabs/edm
@@ -39,7 +49,14 @@ class EDM(BaseDiffusionModel):
             context_length = context_length,
             sigma_min=config.sigma_min,
             sigma_max=config.sigma_max,
-            rho=config.rho
+            rho=config.rho,
+            s_churn=config.s_churn,
+            s_tmin=config.s_tmin,
+            s_tmax=config.s_tmax,
+            s_noise=config.s_noise,
+            order=config.order,
+            sigma_offset_noise=config.sigma_offset_noise,
+            quantize_output=config.quantize_output,
         )
 
     def __init__(
@@ -52,7 +69,14 @@ class EDM(BaseDiffusionModel):
         device: str,
         sigma_min = 0.002,           
         sigma_max = 80,
-        rho: float = 7
+        rho: float = 7,
+        s_churn: float = 0,
+        s_tmin: float = 0,
+        s_tmax: float = float('inf'),
+        s_noise: float = 1,
+        order: int = 1,
+        sigma_offset_noise: float = 0.0,
+        quantize_output: bool = True,
     ):
         super().__init__()
         self.p_mean = p_mean
@@ -64,35 +88,41 @@ class EDM(BaseDiffusionModel):
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
         self.rho = rho
+        self.s_churn = s_churn
+        self.s_tmin = s_tmin
+        self.s_tmax = s_tmax
+        self.s_noise = s_noise
+        self.order = order
+        self.sigma_offset_noise = sigma_offset_noise
+        self.quantize_output = quantize_output
 
     def _denoise(self, x: torch.Tensor, sigma: torch.Tensor, prev_frames: torch.Tensor, prev_actions: torch.Tensor):
-        x = x.to(torch.float32)
-        sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1)
-
-        c_skip = self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2)
-        c_out = sigma * self.sigma_data / (sigma ** 2 + self.sigma_data ** 2).sqrt()
-        c_in = 1 / (self.sigma_data ** 2 + sigma ** 2).sqrt()
-        c_noise = sigma.log() / 4
-
-        # Concat noise imgs with previous frames
-        noise_imgs = torch.concat([(c_in * x)[:, None, :, :, :], prev_frames], dim=1).flatten(1,2)
-
-        F_x = self.model(noise_imgs, c_noise.flatten(), prev_actions)
-        D_x = c_skip * x + c_out * F_x.to(torch.float32)
+        # Build conditioners with offset noise
+        sigma = sigma.to(torch.float32).flatten()
+        cs = compute_conditioners(sigma, self.sigma_data, self.sigma_offset_noise)
+        # Prepare model input
+        noise_imgs = torch.concat([(cs.c_in * x)[:, None, :, :, :], prev_frames], dim=1).flatten(1,2)
+        F_x = self.model(noise_imgs, cs.c_noise.flatten(), prev_actions)
+        # Wrap output, optional quantization enabled only in sampling paths
+        D_x = wrap_model_output(x, F_x.to(torch.float32), cs, quantize_output=self.quantize_output)
         return D_x
 
     def forward(self, imgs: torch.Tensor, prev_frames: torch.Tensor, prev_actions: torch.Tensor):
         assert prev_frames.shape[1] == prev_actions.shape[1] == self.context_length
-
-        rnd_normal = torch.randn([imgs.shape[0], 1, 1, 1], device=self.device)
+        # Sample sigmas log-normal per EDM
+        rnd_normal = torch.randn([imgs.shape[0]], device=self.device)
         sigma = (rnd_normal * self.p_std + self.p_mean).exp()
-        weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
-        y = imgs
-        n = torch.randn_like(y) * sigma
-
-        D_yn = self._denoise(y + n, sigma, prev_frames, prev_actions)
-        
-        return (weight * ((D_yn - y) ** 2)).mean()
+        # Apply noise with optional offset noise
+        noisy = apply_noise(imgs, sigma, self.sigma_offset_noise)
+        # Compute conditioners and target per Karras
+        cs = compute_conditioners(sigma, self.sigma_data, self.sigma_offset_noise)
+        # Get raw model output in model space (no quantization, no wrapping)
+        noise_imgs = torch.concat([(cs.c_in * noisy)[:, None, :, :, :], prev_frames], dim=1).flatten(1,2)
+        model_out = self.model(noise_imgs, cs.c_noise.flatten(), prev_actions).to(torch.float32)
+        # Target in model space
+        target = (imgs - cs.c_skip * noisy) / cs.c_out
+        loss = F.mse_loss(model_out, target)
+        return loss
         
     @torch.no_grad()
     def sample(
@@ -100,36 +130,31 @@ class EDM(BaseDiffusionModel):
         prev_frames: torch.Tensor,
         prev_actions: torch.Tensor
     ) -> torch.Tensor:
-        x_t = torch.randn(1, *size, device=self.device)
+        # Initial image is pure noise
+        x = torch.randn(1, *size, device=self.device)
+        sigmas = build_sigmas(steps, self.sigma_min, self.sigma_max, self.rho, self.model.parameters().__next__().device)
+        # Precompute scalar gamma as in Karras; when steps>=2, use s_churn/(steps-1), capped
+        denom = max(1, steps - 1)
+        gamma_scalar = min(self.s_churn / denom, 2 ** 0.5 - 1) if self.s_churn > 0 else 0.0
 
-        # Adjust noise levels based on what's supported by the network.
-        sigma_min = self.sigma_min
-        sigma_max = self.sigma_max
-        rho = self.rho
+        def denoise_fn(x_in: torch.Tensor, sigma_in: torch.Tensor) -> torch.Tensor:
+            return self._denoise(x_in, sigma_in, prev_frames, prev_actions).to(torch.float)
 
-        # Time step discretization.
-        step_indices = torch.arange(steps, dtype=torch.float, device=self.device)
-        t_steps = (sigma_max ** (1 / rho) + step_indices / (steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
-        t_steps = torch.cat([torch.as_tensor(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
-
-        # Main sampling loop.
-        x_next = x_t.to(torch.float) * t_steps[0]
-        for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])): # 0, ..., N-1
-            x_hat = x_next
-            t_hat = t_cur
-            
-            # Euler step.
-            denoised = self._denoise(x_hat, t_hat, prev_frames, prev_actions).to(torch.float)
-            d_cur = (x_hat - denoised) / t_hat
-            x_next = x_hat + (t_next - t_hat) * d_cur
-
-            # Apply 2nd order correction.
-            if i < steps - 1:
-                denoised = self._denoise(x_next, t_next, prev_frames, prev_actions).to(torch.float)
-                d_prime = (x_next - denoised) / t_next
-                x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
-
-        return x_next
+        for i in range(len(sigmas) - 1):
+            sigma = sigmas[i].repeat(x.shape[0])
+            next_sigma = sigmas[i + 1].repeat(x.shape[0])
+            x = karras_step(
+                x,
+                sigma,
+                next_sigma,
+                denoise_fn,
+                gamma_scalar,
+                self.s_tmin,
+                self.s_tmax,
+                self.s_noise,
+                self.order,
+            )
+        return x
         
 if __name__ == "__main__":
     size = (64, 64)
