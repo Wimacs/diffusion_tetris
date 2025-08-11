@@ -63,6 +63,130 @@ class GroupNorm(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.norm(x)
 
+# ===== New blocks to match clipboard UNet style =====
+
+class AdaGroupNorm(nn.Module):
+    def __init__(self, in_channels: int, cond_channels: int) -> None:
+        super().__init__()
+        self.in_channels = in_channels
+        self.num_groups = max(1, in_channels // GROUP_SIZE)
+        self.linear = nn.Linear(cond_channels, in_channels * 2)
+
+    def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+        assert x.size(1) == self.in_channels
+        x = F.group_norm(x, self.num_groups, eps=GN_EPS)
+        scale, shift = self.linear(cond)[:, :, None, None].chunk(2, dim=1)
+        return x * (1 + scale) + shift
+
+class SelfAttention2d(nn.Module):
+    def __init__(self, in_channels: int, head_dim: int = 8) -> None:
+        super().__init__()
+        self.n_head = max(1, in_channels // head_dim)
+        assert in_channels % self.n_head == 0
+        self.norm = GroupNorm(in_channels)
+        self.qkv_proj = Conv1x1(in_channels, in_channels * 3)
+        self.out_proj = Conv1x1(in_channels, in_channels)
+        nn.init.zeros_(self.out_proj.weight)
+        nn.init.zeros_(self.out_proj.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        n, c, h, w = x.shape
+        x = self.norm(x)
+        qkv = self.qkv_proj(x)
+        qkv = qkv.view(n, self.n_head * 3, c // self.n_head, h * w).transpose(2, 3).contiguous()
+        q, k, v = [x for x in qkv.chunk(3, dim=1)]
+        att = (q @ k.transpose(-2, -1)) / math.sqrt(k.size(-1))
+        att = F.softmax(att, dim=-1)
+        y = att @ v
+        y = y.transpose(2, 3).reshape(n, c, h, w)
+        return x + self.out_proj(y)
+
+class FourierFeatures(nn.Module):
+    def __init__(self, cond_channels: int) -> None:
+        super().__init__()
+        assert cond_channels % 2 == 0
+        self.register_buffer("weight", torch.randn(1, cond_channels // 2))
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        assert input.ndim == 1
+        f = 2 * math.pi * input.unsqueeze(1) @ self.weight
+        return torch.cat([f.cos(), f.sin()], dim=-1)
+
+class Downsample(nn.Module):
+    def __init__(self, in_channels: int) -> None:
+        super().__init__()
+        self.conv = nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=2, padding=1)
+        nn.init.orthogonal_(self.conv.weight)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.conv(x)
+
+class Upsample(nn.Module):
+    def __init__(self, in_channels: int) -> None:
+        super().__init__()
+        self.conv = Conv3x3(in_channels, in_channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.interpolate(x, scale_factor=2.0, mode="nearest")
+        return self.conv(x)
+
+class SmallResBlock(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int) -> None:
+        super().__init__()
+        self.f = nn.Sequential(GroupNorm(in_channels), nn.SiLU(inplace=True), Conv3x3(in_channels, out_channels))
+        self.skip_projection = nn.Identity() if in_channels == out_channels else Conv1x1(in_channels, out_channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.skip_projection(x) + self.f(x)
+
+class ResBlock(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, cond_channels: int, attn: bool) -> None:
+        super().__init__()
+        should_proj = in_channels != out_channels
+        self.proj = Conv1x1(in_channels, out_channels) if should_proj else nn.Identity()
+        self.norm1 = AdaGroupNorm(in_channels, cond_channels)
+        self.conv1 = Conv3x3(in_channels, out_channels)
+        self.norm2 = AdaGroupNorm(out_channels, cond_channels)
+        self.conv2 = Conv3x3(out_channels, out_channels)
+        self.attn = SelfAttention2d(out_channels) if attn else nn.Identity()
+        nn.init.zeros_(self.conv2.weight)
+
+    def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+        r = self.proj(x)
+        x = self.conv1(F.silu(self.norm1(x, cond)))
+        x = self.conv2(F.silu(self.norm2(x, cond)))
+        x = x + r
+        x = self.attn(x)
+        return x
+
+class ResBlocks(nn.Module):
+    def __init__(
+        self,
+        list_in_channels: List[int],
+        list_out_channels: List[int],
+        cond_channels: int,
+        attn: bool,
+    ) -> None:
+        super().__init__()
+        assert len(list_in_channels) == len(list_out_channels)
+        self.in_channels = list_in_channels[0]
+        self.resblocks = nn.ModuleList(
+            [
+                ResBlock(in_ch, out_ch, cond_channels, attn)
+                for (in_ch, out_ch) in zip(list_in_channels, list_out_channels)
+            ]
+        )
+
+    def forward(self, x: torch.Tensor, cond: torch.Tensor, to_cat: Optional[List[torch.Tensor]] = None) -> Tuple[torch.Tensor, List[torch.Tensor]]:
+        outputs: List[torch.Tensor] = []
+        for i, resblock in enumerate(self.resblocks):
+            x = x if to_cat is None else torch.cat((x, to_cat[i]), dim=1)
+            x = resblock(x, cond)
+            outputs.append(x)
+        return x, outputs
+
+# ===== Legacy attention (kept to avoid breaking imports) =====
+
 class MultiheadAttention(nn.Module):
     def __init__(self, in_channels: int, head_dim: int = 8) -> None:
         super().__init__()
@@ -85,6 +209,8 @@ class MultiheadAttention(nn.Module):
         y = att @ v
         y = y.transpose(2, 3).reshape(n, c, h, w)
         return x + self.out_proj(y)
+
+# ===== Old residual stack kept (unused by new UNet) =====
 
 class NormBlock(nn.Module):
     def __init__(self, in_channels, cond_channels):
@@ -150,10 +276,15 @@ class ResnetsBlock(nn.Module):
     
 @dataclass
 class UNetConfig:
-    steps: List[int]
-    channels: List[int]
+    # Support both legacy fields and new clipboard-style fields
+    # New style
     cond_channels: int
-    attn_step_indexes: List[bool]
+    channels: List[int]
+    depths: Optional[List[int]] = None
+    attn_depths: Optional[List[bool]] = None
+    # Legacy style (will be mapped to new)
+    steps: Optional[List[int]] = None
+    attn_step_indexes: Optional[List[bool]] = None
 
 class UNet(nn.Module):
     @classmethod
@@ -166,16 +297,19 @@ class UNet(nn.Module):
         seq_length: int,
         T: Optional[int] = None
     ):
+        # Map legacy fields to new ones if needed
+        depths = config.depths if config.depths is not None else (config.steps if config.steps is not None else [2,2,2,2])
+        attn_depths = config.attn_depths if config.attn_depths is not None else (config.attn_step_indexes if config.attn_step_indexes is not None else [False]*len(depths))
         return cls(
             in_channels=in_channels,
             out_channels=out_channels,
             T=T,
             actions_count=actions_count,
             seq_length=seq_length,
-            steps=config.steps,
+            depths=depths,
             channels=config.channels,
             cond_channels=config.cond_channels,
-            attn_step_indexes=config.attn_step_indexes
+            attn_depths=attn_depths
         )
 
     def __init__(
@@ -185,84 +319,128 @@ class UNet(nn.Module):
         T: Optional[int],
         actions_count: int,
         seq_length: int,
-        steps=(2, 2, 2, 2),
-        channels = (64, 64, 64, 64),
-        cond_channels = 256,
-        attn_step_indexes = [False, False, False, False]
+        depths: List[int] = (2, 2, 2, 2),
+        channels: List[int] = (64, 64, 64, 64),
+        cond_channels: int = 256,
+        attn_depths: List[bool] = (False, False, False, False)
     ):
         super().__init__()
-        assert len(steps) == len(channels) == len(attn_step_indexes)
-        self.time_embedding = PositionalEmbedding(T=T, output_dim=cond_channels) if T is not None else FloatPositionalEmbedding(output_dim=cond_channels)
+        assert len(depths) == len(channels) == len(attn_depths)
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.cond_channels = cond_channels
+        self.seq_length = seq_length
+        self.T = T
+
+        # Condition embedding: FourierFeatures for time/noise + action embedding, then MLP
+        self.time_fourier = FourierFeatures(cond_channels)
         self.actions_embedding = nn.Sequential(
             nn.Embedding(actions_count, cond_channels // seq_length),
             nn.Flatten()
         )
         self.cond_embedding = nn.Sequential(
             nn.Linear(cond_channels, cond_channels),
-            nn.ReLU(),
+            nn.SiLU(inplace=True),
             nn.Linear(cond_channels, cond_channels),
         )
 
-        self.first_conv = nn.Conv2d(in_channels, channels[0], kernel_size=3, padding=1)
-        down_res_blocks = []
-        self.downsample_blocks = nn.ModuleList()
-        self.upsample_blocks = nn.ModuleList()
-        up_res_blocks = []
-        for (index, step) in enumerate(steps):
-            in_ch = step * [channels[index]]
-            out_ch = in_ch.copy()
-            out_ch[-1] = channels[index + 1] if index < len(steps) - 1 else channels[index]
-            down_res_blocks.append(ResnetsBlock(
-                in_channels_list=in_ch,
-                out_channels_list=out_ch,
-                cond_channels=cond_channels,
-                has_attn=index == attn_step_indexes[index]
-            ))
-            self.downsample_blocks.append(DownBlock(in_ch[0]))
-            self.upsample_blocks.append(UpBlock(out_ch[-1]))
-            in_ch = step * [channels[index]]
-            out_ch = in_ch.copy()
-            in_ch[0] = 2 * (channels[index + 1] if index < len(steps) - 1 else channels[index])
-            up_res_blocks.append(ResnetsBlock(
-                in_channels_list=in_ch,
-                out_channels_list=out_ch,
-                cond_channels=cond_channels,
-                has_attn=index == attn_step_indexes[index]
-            ))
-        self.downres_blocks = nn.ModuleList(down_res_blocks)
-        self.upres_blocks = nn.ModuleList(reversed(up_res_blocks))
-        self.backbone = ResnetsBlock(
-            [channels[-1]] * 2,
-            [channels[-1]] * 2,
-            cond_channels=cond_channels,
-            has_attn=True
-        )
-        self.out = nn.Sequential(
-            nn.ReLU(),
+        # Input/Output projections to decouple data channels from feature channels
+        self.input_proj = nn.Conv2d(in_channels, channels[0], kernel_size=3, padding=1)
+        self.output_proj = nn.Sequential(
+            nn.SiLU(inplace=True),
             nn.Conv2d(in_channels=channels[0], out_channels=out_channels, kernel_size=3, stride=1, padding=1)
         )
-        
-    def forward(self, x: torch.Tensor, t: torch.Tensor, prev_actions: torch.Tensor):
-        assert x.shape[0] == prev_actions.shape[0]
-        time_emb = self.time_embedding(t)
+
+        # Build encoder/decoder stacks in clipboard style
+        self._num_down = len(channels) - 1
+        d_blocks: List[ResBlocks] = []
+        u_blocks: List[ResBlocks] = []
+        for i, n in enumerate(depths):
+            c1 = channels[max(0, i - 1)]
+            c2 = channels[i]
+            d_blocks.append(
+                ResBlocks(
+                    list_in_channels=[c1] + [c2] * (n - 1),
+                    list_out_channels=[c2] * n,
+                    cond_channels=cond_channels,
+                    attn=attn_depths[i],
+                )
+            )
+            u_blocks.append(
+                ResBlocks(
+                    list_in_channels=[2 * c2] * n + [c1 + c2],
+                    list_out_channels=[c2] * n + [c1],
+                    cond_channels=cond_channels,
+                    attn=attn_depths[i],
+                )
+            )
+        self.d_blocks = nn.ModuleList(d_blocks)
+        self.u_blocks = nn.ModuleList(reversed(u_blocks))
+
+        self.mid_blocks = ResBlocks(
+            list_in_channels=[channels[-1]] * 2,
+            list_out_channels=[channels[-1]] * 2,
+            cond_channels=cond_channels,
+            attn=True,
+        )
+
+        downsamples = [nn.Identity()] + [Downsample(c) for c in channels[:-1]]
+        upsamples = [nn.Identity()] + [Upsample(c) for c in reversed(channels[:-1])]
+        self.downsamples = nn.ModuleList(downsamples)
+        self.upsamples = nn.ModuleList(upsamples)
+
+    def _build_condition(self, t: torch.Tensor, prev_actions: torch.Tensor) -> torch.Tensor:
+        # t can be EDM continuous noise encoding (already log-scaled) or DDPM integer step
+        if t.ndim == 2 and t.size(1) == 1:
+            t = t.squeeze(1)
+        t = t.to(dtype=torch.float32)
+        if self.T is not None:
+            # normalize t for DDPM if it looks like integer steps
+            # avoid division by zero if T==0 (not expected)
+            t = t / float(max(self.T, 1))
+        time_emb = self.time_fourier(t)
         actions_emb = self.actions_embedding(prev_actions)
-        cond = self.cond_embedding(time_emb + actions_emb)
+        cond = time_emb + actions_emb
+        cond = self.cond_embedding(cond)
+        return cond
 
-        x = self.first_conv(x)
-        hx = []
-        for index, downres_block in enumerate(self.downres_blocks):
-            x = downres_block(x, cond)
-            hx.append(x)
-            x = self.downsample_blocks[index](x)                
-        x = self.backbone(x, cond)
+    def forward(self, x: torch.Tensor, t: torch.Tensor, prev_actions: torch.Tensor):
+        # Build condition vector
+        cond = self._build_condition(t, prev_actions)
 
-        for index, up_block in enumerate(self.upres_blocks):
-            x = self.upsample_blocks[len(self.upres_blocks) - index - 1](x)
-            x = up_block(torch.cat([x, hx[len(self.upres_blocks) - index - 1]], 1), cond)
-        x = self.out(x)
+        # Project input to feature channels
+        x = self.input_proj(x)
 
+        # Auto padding to be divisible by 2^n
+        *_, h, w = x.size()
+        n = self._num_down
+        padding_h = math.ceil(h / 2 ** n) * 2 ** n - h
+        padding_w = math.ceil(w / 2 ** n) * 2 ** n - w
+        if padding_h > 0 or padding_w > 0:
+            x = F.pad(x, (0, padding_w, 0, padding_h))
+
+        # Encoder
+        d_outputs: List[List[torch.Tensor]] = []
+        for block, down in zip(self.d_blocks, self.downsamples):
+            x_down = down(x)
+            x, block_outputs = block(x_down, cond)
+            d_outputs.append([x_down, *block_outputs])
+
+        # Mid
+        x, _ = self.mid_blocks(x, cond)
+
+        # Decoder (with fine-grained skip connections)
+        for block, up, skip in zip(self.u_blocks, self.upsamples, reversed(d_outputs)):
+            x_up = up(x)
+            x, _ = block(x_up, cond, skip[::-1])
+
+        # Crop back
+        x = x[..., :h, :w]
+
+        # Project to output channels
+        x = self.output_proj(x)
         return x
-    
+
 if __name__ == "__main__":
     DownBlock(4).forward(torch.rand(4,4,64,64)).size(-1) == 32
     DownBlock(4).forward(torch.rand(4,4,32,32)).size(-1) == 16
