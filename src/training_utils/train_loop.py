@@ -15,6 +15,14 @@ class TrainingConfig:
     batch_size: int
     num_workers: int
     save_every_epoch: Optional[int] = None
+    lr: float = 1e-4
+
+    def __post_init__(self):
+        try:
+            self.lr = float(self.lr)
+        except Exception:
+            raise ValueError(f"Invalid learning rate value: {self.lr}")
+
 
 def train_loop(
     model: BaseDiffusionModel,
@@ -24,13 +32,14 @@ def train_loop(
     val_dataloader: DataLoader,
     output_path_prefix: str,
     existing_model_path: Optional[str] = None,
-    gen_imgs: Callable[[int], None] = None
+    gen_imgs: Callable[[int], None] = None,
+    writer: Optional[object] = None,
 ):
     if os.path.dirname(output_path_prefix) != "":
         os.makedirs(os.path.dirname(output_path_prefix), exist_ok=True)
     if gen_imgs:
         os.makedirs("val_images", exist_ok=True)
-    optimizer = torch.optim.Adam(params=model.parameters(), lr=2e-4)
+    optimizer = torch.optim.Adam(params=model.parameters(), lr=config.lr)
     epoch_range = range(1, config.epochs + 1)
     if existing_model_path is not None:
         parameters = torch.load(existing_model_path, map_location=device)
@@ -40,6 +49,7 @@ def train_loop(
 
     training_losses = []
     val_losses = []
+    global_step = 0
     for epoch in epoch_range:
         model.train(True)
         training_loss = 0
@@ -58,6 +68,13 @@ def train_loop(
             optimizer.step()
             training_loss += loss.item()
             pbar.set_description(f"loss for epoch {epoch}: {training_loss / (index + 1):.4f}")
+            if writer is not None:
+                try:
+                    writer.add_scalar("loss/train_step", loss.item(), global_step)
+                    writer.add_scalar("lr", optimizer.param_groups[0]["lr"], global_step)
+                except Exception:
+                    pass
+            global_step += 1
         model.eval()
         with torch.no_grad():
             for index, (imgs, previous_frames, previous_actions) in enumerate(val_dataloader):
@@ -71,8 +88,17 @@ def train_loop(
                 pbar.set_description(f"val loss for epoch {epoch}: {val_loss / (index + 1):.4f}")
             if gen_imgs:
                 gen_imgs(epoch)
-        training_losses.append(training_loss / len(val_dataloader))
+        epoch_train_loss = training_loss / len(train_dataloader)
+        epoch_val_loss = val_loss / len(val_dataloader)
+        training_losses.append(epoch_train_loss)
         val_losses.append(val_loss / len(val_dataloader))
+        if writer is not None:
+            try:
+                writer.add_scalar("loss/train_epoch", epoch_train_loss, epoch)
+                writer.add_scalar("loss/val_epoch", epoch_val_loss, epoch)
+                writer.flush()
+            except Exception:
+                pass
         if config.save_every_epoch is not None and epoch > 0 and epoch % config.save_every_epoch == 0:
             torch.save({
                 "model": model.state_dict(),
