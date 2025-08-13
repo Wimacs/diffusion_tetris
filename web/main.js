@@ -17,10 +17,14 @@
   const actionEl = document.getElementById('action');
   const canvas = document.getElementById('canvas');
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const onnxDefault = document.getElementById('onnxDefault');
+  const startDefault = document.getElementById('startDefault');
 
   const W = cfg.generation.image_size;
   const H = cfg.generation.image_size;
   let SCALE = parseInt(scaleInput.value, 10) || 6;
+  if (onnxDefault && cfg.model_url) onnxDefault.textContent = `(default: ${cfg.model_url})`;
+  if (startDefault && cfg.start_image) startDefault.textContent = `(default: ${cfg.start_image})`;
 
   function setStatus(text) { statusEl.textContent = text; }
   function setAction(text) { if (actionEl) actionEl.textContent = text; }
@@ -373,6 +377,7 @@
     const f = e.target.files[0];
     if (!f) return;
     await ensureSessionFromFile(f);
+    if (onnxDefault) onnxDefault.textContent = `(已选择: ${f.name})`;
   });
 
   startImgInput.addEventListener('change', async (e) => {
@@ -383,6 +388,7 @@
       await loadStartImage(f);
       resetSequence();
       setStatus('Start image loaded');
+      if (startDefault) startDefault.textContent = `(已选择: ${f.name})`;
     } catch (err) {
       console.error('Failed to load start image', err);
       setStatus('Failed to load start image');
@@ -401,7 +407,10 @@
       if (res.ok) {
         const blob = await res.blob();
         await loadStartImage(new File([blob], 'start.png', { type: blob.type }));
+        // Ensure generated sequence starts from the loaded start image
+        resetSequence();
         setStatus('Start image loaded');
+        if (startDefault) startDefault.textContent = `(默认: ${startPath})`;
       }
     } catch {}
   })();
@@ -413,6 +422,7 @@
         await ensureSessionFromUrl(cfg.model_url);
         if (cfg.autoplay === true) autoplay = true;
         setStatus('Model auto-loaded');
+        if (onnxDefault) onnxDefault.textContent = `(默认: ${cfg.model_url})`;
       }
     } catch (e) {
       console.error('Failed to auto-load model', e);
