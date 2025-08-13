@@ -133,9 +133,6 @@ class EDM(BaseDiffusionModel):
         # Initial image is pure noise
         x = torch.randn(1, *size, device=self.device)
         sigmas = build_sigmas(steps, self.sigma_min, self.sigma_max, self.rho, self.model.parameters().__next__().device)
-        # Precompute scalar gamma as in Karras; when steps>=2, use s_churn/(steps-1), capped
-        denom = max(1, steps - 1)
-        gamma_scalar = min(self.s_churn / denom, 2 ** 0.5 - 1) if self.s_churn > 0 else 0.0
 
         def denoise_fn(x_in: torch.Tensor, sigma_in: torch.Tensor) -> torch.Tensor:
             return self._denoise(x_in, sigma_in, prev_frames, prev_actions).to(torch.float)
@@ -148,11 +145,12 @@ class EDM(BaseDiffusionModel):
                 sigma,
                 next_sigma,
                 denoise_fn,
-                gamma_scalar,
+                self.s_churn,
                 self.s_tmin,
                 self.s_tmax,
                 self.s_noise,
                 self.order,
+                num_steps_total=len(sigmas) - 1,
             )
         return x
         

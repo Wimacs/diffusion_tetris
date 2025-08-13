@@ -15,14 +15,7 @@ class TrainingConfig:
     batch_size: int
     num_workers: int
     save_every_epoch: Optional[int] = None
-    lr: float = 1e-4
-
-    def __post_init__(self):
-        try:
-            self.lr = float(self.lr)
-        except Exception:
-            raise ValueError(f"Invalid learning rate value: {self.lr}")
-
+    max_grad_norm: Optional[float] = None
 
 def train_loop(
     model: BaseDiffusionModel,
@@ -39,7 +32,7 @@ def train_loop(
         os.makedirs(os.path.dirname(output_path_prefix), exist_ok=True)
     if gen_imgs:
         os.makedirs("val_images", exist_ok=True)
-    optimizer = torch.optim.Adam(params=model.parameters(), lr=config.lr)
+    optimizer = torch.optim.Adam(params=model.parameters(), lr=1e-5)
     epoch_range = range(1, config.epochs + 1)
     if existing_model_path is not None:
         parameters = torch.load(existing_model_path, map_location=device)
@@ -65,6 +58,8 @@ def train_loop(
             loss = model.forward(imgs, previous_frames, previous_actions)
     
             loss.backward()
+            if config.max_grad_norm is not None and config.max_grad_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.max_grad_norm)
             optimizer.step()
             training_loss += loss.item()
             pbar.set_description(f"loss for epoch {epoch}: {training_loss / (index + 1):.4f}")
