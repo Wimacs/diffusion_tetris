@@ -1,8 +1,5 @@
 <p align="center">
-  <video src="media/EDM%20Inference%20-%200_No-op,%201_Up,%202_Down,%203_Left,%204_Right%202025-08-13%2014-37-22.mp4" controls muted playsinline width="640"></video>
-  <br/>
-  <a href="media/EDM%20Inference%20-%200_No-op,%201_Up,%202_Down,%203_Left,%204_Right%202025-08-13%2014-37-22.mp4">Download/view sample video</a>
-  
+  <img src="media/GIF%208-13-2025%205-05-56%20PM.gif" width="640" />
 </p>
 
 ## Diffusion Tetris
