@@ -47,7 +47,6 @@ datasets/
 *.pt
 *.ckpt
 *.pb
-*.onnx
 *.tflite
 *.mlmodel
 weights/
@@ -94,3 +93,10 @@ coverage.xml
 *.cover
 *.py,cover
 .hypothesis/
+
+# Exception: keep web/start.png even though *.png files are ignored
+!web/start.png
+
+# GitHub Pages: keep docs assets even though they're globally ignored
+!docs/config.json
+!docs/start.png

@@ -1,0 +1,27 @@
+{
+  "model_url": "unet.onnx",
+  "start_image": "start.png",
+  "autoplay": true,
+  "generation": {
+    "image_size": 64,
+    "input_channels": 3,
+    "output_channels": 3,
+    "context_length": 4,
+    "actions_count": 5
+  },
+  "edm": {
+    "p_mean": -0.4,
+    "p_std": 1.2,
+    "sigma_data": 0.5,
+    "sigma_min": 0.002,
+    "sigma_max": 5.0,
+    "rho": 7,
+    "order": 1,
+    "s_churn": 0.0,
+    "s_tmin": 0.0,
+    "s_tmax": ".inf",
+    "s_noise": 1.0,
+    "sigma_offset_noise": 0.0,
+    "quantize_output": true
+  }
+} 
