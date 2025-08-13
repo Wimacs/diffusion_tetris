@@ -2,6 +2,10 @@
   <img src="media/GIF%208-13-2025%205-05-56%20PM.gif" width="640" />
 </p>
 
+<p align="center">
+  <a href="https://wimacs.github.io/diffusion_tetris/"><b>Play online</b></a>
+</p>
+
 ## Diffusion Tetris
 
 A conditional diffusion model that predicts the next 64x64 RGB frame of a Tetris-like game given the previous context frames and a sequence of player actions. The repository includes:
