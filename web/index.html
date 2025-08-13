@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Diffusion Tetris Web Inference</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Noto Sans, Arial, sans-serif; margin: 16px; color: #222; }
+    .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 10px; }
+    .col { display: flex; flex-direction: column; gap: 4px; }
+    label { font-size: 13px; color: #555; }
+    input[type="number"], input[type="range"], select, button { padding: 6px 8px; font-size: 14px; }
+    button { cursor: pointer; }
+    #canvas { background: #111; image-rendering: pixelated; }
+    .kbd { padding: 2px 6px; border: 1px solid #aaa; border-bottom-width: 2px; border-radius: 4px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+    .muted { color: #777; font-size: 12px; }
+    #status { font-size: 13px; color: #0a7; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/ort.min.js"></script>
+</head>
+<body>
+  <h2>Diffusion Tetris Web Inference (ONNX)</h2>
+
+  <div class="row">
+    <div class="col">
+      <label>Load ONNX Model</label>
+      <input id="onnxFile" type="file" accept=".onnx" />
+    </div>
+    <div class="col">
+      <label>Start Image (optional)</label>
+      <input id="startImg" type="file" accept="image/*" />
+    </div>
+    <div class="col">
+      <label>Sampling Steps</label>
+      <input id="steps" type="range" min="1" max="5" value="3" />
+      <span id="stepsVal" class="muted">3</span>
+    </div>
+    <div class="col">
+      <label>Scale</label>
+      <input id="scale" type="number" min="1" max="20" step="1" value="6" />
+    </div>
+    <div class="col">
+      <label>Autoplay FPS</label>
+      <input id="autoplayFps" type="range" min="1" max="30" value="5" />
+      <span id="fpsVal" class="muted">5</span>
+    </div>
+  </div>
+
+  <div class="row">
+    <button id="btnAutoplay">Pause Autoplay</button>
+    <button id="btnStep">Step</button>
+    <button id="btnReset">Reset Sequence</button>
+    <span id="action" style="margin-left:8px; margin-right:8px;"></span>
+    <span id="status"></span>
+  </div>
+
+  <div class="row">
+    <canvas id="canvas" width="384" height="384"></canvas>
+  </div>
+
+  <div class="row">
+    <div>
+      <div class="muted"><strong>Keys</strong>:</div>
+      <div class="muted">
+        <span class="kbd">↑</span>/<span class="kbd">1</span> Up,
+        <span class="kbd">↓</span>/<span class="kbd">2</span> Down,
+        <span class="kbd">←</span>/<span class="kbd">3</span> Left,
+        <span class="kbd">→</span>/<span class="kbd">4</span> Right,
+        <span class="kbd">0</span> No-op;
+        <span class="kbd">A</span> Toggle autoplay,
+        <span class="kbd">S</span> Step,
+        <span class="kbd">R</span> Reset.
+      </div>
+    </div>
+  </div>
+
+  <script src="./main.js"></script>
+</body>
+</html> 
